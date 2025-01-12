@@ -5,6 +5,7 @@ Functions to edit:
     1. run_training_loop
 """
 
+import json
 import pickle
 import os
 import time
@@ -132,16 +133,18 @@ def run_training_loop(params):
             # TODO: collect `params['batch_size']` transitions
             # HINT: use utils.sample_trajectories
             # TODO: implement missing parts of utils.sample_trajectory
-            paths, envsteps_this_batch = TODO
+            paths, envsteps_this_batch = utils.sample_trajectories(
+                env, actor, params['batch_size'], params['ep_len'])
 
             # relabel the collected obs with actions from a provided expert policy
             if params['do_dagger']:
                 print("\nRelabelling collected observations with labels from an expert policy...")
 
-                # TODO: relabel collected obsevations (from our policy) with labels from expert policy
+                # TODO: relabel collected observations (from our policy) with labels from expert policy
                 # HINT: query the policy (using the get_action function) with paths[i]["observation"]
                 # and replace paths[i]["action"] with these expert labels
-                paths = TODO
+                for path in paths:
+                    path["action"] = expert_policy.get_action(path["observation"])
 
         total_envsteps += envsteps_this_batch
         # add collected data to replay buffer
@@ -151,17 +154,18 @@ def run_training_loop(params):
         print('\nTraining agent using sampled data from replay buffer...')
         training_logs = []
         for _ in range(params['num_agent_train_steps_per_iter']):
-
-          # TODO: sample some data from replay_buffer
-          # HINT1: how much data = params['train_batch_size']
-          # HINT2: use np.random.permutation to sample random indices
-          # HINT3: return corresponding data points from each array (i.e., not different indices from each array)
-          # for imitation learning, we only need observations and actions.  
-          ob_batch, ac_batch = TODO
-
-          # use the sampled data to train an agent
-          train_log = actor.update(ob_batch, ac_batch)
-          training_logs.append(train_log)
+            # TODO: sample some data from replay_buffer 
+            # HINT1: how much data = params['train_batch_size']
+            # HINT2: use np.random.permutation to sample random indices
+            # HINT3: return corresponding data points from each array (i.e., not different indices from each array)
+            # for imitation learning, we only need observations and actions.  
+            indices = np.random.permutation(len(replay_buffer))[:params['train_batch_size']]
+            ob_batch = ptu.from_numpy(replay_buffer.obs[indices])
+            ac_batch = ptu.from_numpy(replay_buffer.acs[indices])
+        
+            # use the sampled data to train an agent
+            train_log = actor.update(ob_batch, ac_batch)
+            training_logs.append(train_log)
 
         # log/save
         print('\nBeginning logging procedure...')
@@ -181,11 +185,25 @@ def run_training_loop(params):
 
         if log_metrics:
             # save eval metrics
-            print("\nCollecting data for eval...")
+            print("\nCollecting data for actor eval...")
             eval_paths, eval_envsteps_this_batch = utils.sample_trajectories(
                 env, actor, params['eval_batch_size'], params['ep_len'])
-
+            
             logs = utils.compute_metrics(paths, eval_paths)
+
+            print("\nCollecting data for expert eval...")
+            expert_eval_paths, _ = utils.sample_trajectories(
+                env, expert_policy, params['eval_batch_size'], params['ep_len'])
+
+            expert_eval_returns = [eval_path["reward"].sum() for eval_path in expert_eval_paths]
+            expert_eval_ep_lens = [len(eval_path["reward"]) for eval_path in expert_eval_paths]
+
+            logs["Expert_AverageReturn"] = np.mean(expert_eval_returns)
+            logs["Expert_StdReturn"] = np.std(expert_eval_returns)
+            logs["Expert_MaxReturn"] = np.max(expert_eval_returns)
+            logs["Expert_MinReturn"] = np.min(expert_eval_returns)
+            logs["Expert_AverageEpLen"] = np.mean(expert_eval_ep_lens)
+
             # compute additional metrics
             logs.update(training_logs[-1]) # Only use the last log for now
             logs["Train_EnvstepsSoFar"] = total_envsteps
@@ -263,6 +281,9 @@ def main():
     params['logdir'] = logdir
     if not(os.path.exists(logdir)):
         os.makedirs(logdir)
+
+    with open(os.path.join(logdir, "config.json"), "w") as f:
+        json.dump(args.__dict__, f, indent=4)
 
     ###################
     ### RUN TRAINING
